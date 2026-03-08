@@ -101,6 +101,21 @@ KEY_PARAM_PREFIXES = [
     'INS_ACC_VRFB_Z', 'INS_ACC2_VRFB_Z', 'INS_ACC3_VRFB_Z',
     'ACC_ZBIAS_LEARN',
     'SCR_ENABLE',
+    # Tuning parameters
+    'ATC_RAT_RLL_P', 'ATC_RAT_RLL_I', 'ATC_RAT_RLL_D',
+    'ATC_RAT_RLL_FLTD', 'ATC_RAT_RLL_FLTT', 'ATC_RAT_RLL_SMAX',
+    'ATC_RAT_PIT_P', 'ATC_RAT_PIT_I', 'ATC_RAT_PIT_D',
+    'ATC_RAT_PIT_FLTD', 'ATC_RAT_PIT_FLTT', 'ATC_RAT_PIT_SMAX',
+    'ATC_RAT_YAW_P', 'ATC_RAT_YAW_I', 'ATC_RAT_YAW_D',
+    'ATC_RAT_YAW_FLTD', 'ATC_RAT_YAW_FLTT', 'ATC_RAT_YAW_SMAX',
+    'ATC_ANG_RLL_P', 'ATC_ANG_PIT_P', 'ATC_ANG_YAW_P',
+    'ATC_ACCEL_R_MAX', 'ATC_ACCEL_P_MAX', 'ATC_ACCEL_Y_MAX',
+    # Motor/notch
+    'MOT_THST_HOVER', 'MOT_PWM_TYPE', 'MOT_SPIN_MIN', 'MOT_SPIN_ARM',
+    'INS_HNTCH_ENABLE', 'INS_HNTCH_MODE', 'INS_HNTCH_FREQ',
+    'INS_HNTCH_HMNCS', 'INS_HNTCH_OPTS', 'INS_HNTCH_BW',
+    'INS_HNTC2_ENABLE', 'INS_HNTC2_MODE', 'INS_HNTC2_FREQ',
+    'INS_HNTC2_HMNCS', 'INS_HNTC2_OPTS', 'INS_HNTC2_BW',
 ]
 
 # Compare recipes: (msg_type, field, display_label, transform)
@@ -166,6 +181,87 @@ RECIPES = {
             ('RCOU', 'C4', 'RCOU.C4', None),
         ],
     },
+    'pid_roll': {
+        'title': 'Roll PID Components',
+        'sources': [
+            ('PIDR', 'P', 'PIDR.P', None),
+            ('PIDR', 'I', 'PIDR.I', None),
+            ('PIDR', 'D', 'PIDR.D', None),
+            ('PIDR', 'FF', 'PIDR.FF', None),
+        ],
+    },
+    'pid_pitch': {
+        'title': 'Pitch PID Components',
+        'sources': [
+            ('PIDP', 'P', 'PIDP.P', None),
+            ('PIDP', 'I', 'PIDP.I', None),
+            ('PIDP', 'D', 'PIDP.D', None),
+            ('PIDP', 'FF', 'PIDP.FF', None),
+        ],
+    },
+    'pid_yaw': {
+        'title': 'Yaw PID Components',
+        'sources': [
+            ('PIDY', 'P', 'PIDY.P', None),
+            ('PIDY', 'I', 'PIDY.I', None),
+            ('PIDY', 'D', 'PIDY.D', None),
+            ('PIDY', 'FF', 'PIDY.FF', None),
+        ],
+    },
+    'rate_roll': {
+        'title': 'Roll Rate Tracking',
+        'sources': [
+            ('RATE', 'RDes', 'RATE.RDes', None),
+            ('RATE', 'R', 'RATE.R', None),
+            ('RATE', 'ROut', 'RATE.ROut', None),
+        ],
+    },
+    'rate_pitch': {
+        'title': 'Pitch Rate Tracking',
+        'sources': [
+            ('RATE', 'PDes', 'RATE.PDes', None),
+            ('RATE', 'P', 'RATE.P', None),
+            ('RATE', 'POut', 'RATE.POut', None),
+        ],
+    },
+    'rate_yaw': {
+        'title': 'Yaw Rate Tracking',
+        'sources': [
+            ('RATE', 'YDes', 'RATE.YDes', None),
+            ('RATE', 'Y', 'RATE.Y', None),
+            ('RATE', 'YOut', 'RATE.YOut', None),
+        ],
+    },
+    'rate_all': {
+        'title': 'Rate Tracking (All Axes)',
+        'sources': [
+            ('RATE', 'RDes', 'Roll.Des', None),
+            ('RATE', 'R', 'Roll.Act', None),
+            ('RATE', 'PDes', 'Pitch.Des', None),
+            ('RATE', 'P', 'Pitch.Act', None),
+            ('RATE', 'YDes', 'Yaw.Des', None),
+            ('RATE', 'Y', 'Yaw.Act', None),
+        ],
+    },
+    'motor_output': {
+        'title': 'Motor Outputs',
+        'sources': [
+            ('RCOU', 'C1', 'Motor1', None),
+            ('RCOU', 'C2', 'Motor2', None),
+            ('RCOU', 'C3', 'Motor3', None),
+            ('RCOU', 'C4', 'Motor4', None),
+        ],
+    },
+    'ctrl_rms': {
+        'title': 'Controller RMS',
+        'sources': [
+            ('CTRL', 'RMSRollP', 'RMS.RollP', None),
+            ('CTRL', 'RMSRollD', 'RMS.RollD', None),
+            ('CTRL', 'RMSPitchP', 'RMS.PitchP', None),
+            ('CTRL', 'RMSPitchD', 'RMS.PitchD', None),
+            ('CTRL', 'RMSYaw', 'RMS.Yaw', None),
+        ],
+    },
 }
 
 
@@ -227,6 +323,24 @@ def format_duration(seconds):
         return f"{m}m{s:02d}s"
     else:
         return f"{s}s"
+
+
+def parse_source_specs(specs_str):
+    """Parse source specs like 'RATE.YDes,RATE.Y,-XKF1.PD' into recipe tuples."""
+    sources = []
+    for spec in specs_str.split(','):
+        spec = spec.strip()
+        transform = None
+        if spec.startswith('-'):
+            transform = 'negate'
+            spec = spec[1:]
+        parts = spec.split('.')
+        if len(parts) != 2:
+            print(f"Error: invalid source spec '{spec}', expected TYPE.FIELD",
+                  file=sys.stderr)
+            sys.exit(1)
+        sources.append((parts[0], parts[1], spec, transform))
+    return sources
 
 
 # ---------------------------------------------------------------------------
@@ -421,20 +535,7 @@ def cmd_compare(args):
         sources = recipe['sources']
         title = recipe['title']
     elif args.sources:
-        # custom: "BARO.Alt,RFND.Dist,-XKF1.PD"
-        sources = []
-        for spec in args.sources.split(','):
-            spec = spec.strip()
-            transform = None
-            if spec.startswith('-'):
-                transform = 'negate'
-                spec = spec[1:]
-            parts = spec.split('.')
-            if len(parts) != 2:
-                print(f"Error: invalid source spec '{spec}', expected TYPE.FIELD",
-                      file=sys.stderr)
-                sys.exit(1)
-            sources.append((parts[0], parts[1], spec, transform))
+        sources = parse_source_specs(args.sources)
         title = 'Custom Comparison'
     else:
         print("Error: specify --recipe or --sources", file=sys.stderr)
@@ -561,6 +662,10 @@ def cmd_plot(args):
         recipe = RECIPES[args.recipe]
         sources = recipe['sources']
         title = args.title or recipe['title']
+    elif args.sources:
+        # custom: "RATE.YDes,RATE.Y,-XKF1.PD"
+        sources = parse_source_specs(args.sources)
+        title = args.title or 'Custom Plot'
     elif args.types and args.fields:
         # manual: --types XKF1 --fields PD,VD
         types = [t.strip() for t in args.types.split(',')]
@@ -571,7 +676,8 @@ def cmd_plot(args):
                 sources.append((t, f, f"{t}.{f}", None))
         title = args.title or f"{','.join(types)} - {','.join(fields)}"
     else:
-        print("Error: specify --recipe or both --types and --fields", file=sys.stderr)
+        print("Error: specify --recipe, --sources, or both --types and --fields",
+              file=sys.stderr)
         sys.exit(1)
 
     mlog = open_log(args.log)
@@ -631,6 +737,92 @@ def cmd_plot(args):
     print(f"Plot saved to: {output}")
 
 
+def cmd_stats(args):
+    """Compute statistics for extracted fields."""
+    import math
+
+    mlog = open_log(args.log)
+    time_base = get_time_base(mlog)
+
+    # Determine sources: either --sources spec or --types/--fields
+    if args.sources:
+        source_specs = parse_source_specs(args.sources)
+    elif args.types:
+        types = [t.strip() for t in args.types.split(',')]
+        fields_list = None
+        if args.fields:
+            fields_list = [f.strip() for f in args.fields.split(',')]
+        source_specs = []
+        for t in types:
+            avail = get_field_names(mlog, t)
+            flds = fields_list if fields_list else [f for f in avail if f != 'TimeUS']
+            for f in flds:
+                if f in avail:
+                    source_specs.append((t, f, f"{t}.{f}", None))
+    else:
+        print("Error: specify --sources or --types [--fields]", file=sys.stderr)
+        sys.exit(1)
+
+    # Collect data per source
+    data = {}  # label -> list of values
+    needed_types = set()
+    for msg_type, field, label, transform in source_specs:
+        data[label] = []
+        needed_types.add(msg_type)
+
+    mlog._rewind()
+    while True:
+        m = mlog.recv_match(type=list(needed_types), condition=args.condition)
+        if m is None:
+            break
+        t = msg_time_s(m, time_base)
+        if args.from_time is not None and t < args.from_time:
+            continue
+        if args.to_time is not None and t > args.to_time:
+            break
+        mtype = m.get_type()
+
+        for msg_type, field, label, transform in source_specs:
+            if mtype != msg_type:
+                continue
+            val = getattr(m, field, None)
+            if val is None:
+                continue
+            inst_field = get_instance_field(msg_type)
+            if inst_field:
+                inst = getattr(m, inst_field, 0)
+                if inst != 0:
+                    continue
+            val = float(val)
+            if transform == 'negate':
+                val = -val
+            data[label].append(val)
+
+    # Compute and display stats
+    print(f"{'Field':<20s} {'Count':>8s} {'Min':>12s} {'Max':>12s} "
+          f"{'Mean':>12s} {'Std':>12s} {'P5':>12s} {'P50':>12s} {'P95':>12s}")
+    print('-' * 112)
+
+    for msg_type, field, label, transform in source_specs:
+        vals = data[label]
+        if not vals:
+            print(f"{label:<20s} {'0':>8s} {'--':>12s} {'--':>12s} "
+                  f"{'--':>12s} {'--':>12s} {'--':>12s} {'--':>12s} {'--':>12s}")
+            continue
+        n = len(vals)
+        vmin = min(vals)
+        vmax = max(vals)
+        mean = sum(vals) / n
+        variance = sum((v - mean) ** 2 for v in vals) / n
+        std = math.sqrt(variance)
+        sorted_vals = sorted(vals)
+        p5 = sorted_vals[int(n * 0.05)]
+        p50 = sorted_vals[int(n * 0.50)]
+        p95 = sorted_vals[min(int(n * 0.95), n - 1)]
+        print(f"{label:<20s} {n:>8d} {vmin:>12.4f} {vmax:>12.4f} "
+              f"{mean:>12.4f} {std:>12.4f} {p5:>12.4f} {p50:>12.4f} {p95:>12.4f}")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -682,11 +874,29 @@ def main():
     p_cmp.add_argument('--interval', type=float, default=0.1,
                         help='Grid interval in seconds (default=0.1)')
 
+    # stats
+    p_st = subparsers.add_parser('stats', help='Compute statistics for fields')
+    p_st.add_argument('log', help='Path to .bin log file')
+    p_st.add_argument('--sources', default=None,
+                       help='Source specs (e.g. "RATE.YDes,RATE.Y,PIDY.D")')
+    p_st.add_argument('--types', default=None,
+                       help='Message types (e.g. RATE,PIDY)')
+    p_st.add_argument('--fields', default=None,
+                       help='Fields (comma-separated, used with --types)')
+    p_st.add_argument('--condition', default=None,
+                       help='Filter condition (pymavlink syntax)')
+    p_st.add_argument('--from-time', type=float, default=None,
+                       help='Start time in seconds')
+    p_st.add_argument('--to-time', type=float, default=None,
+                       help='End time in seconds')
+
     # plot
     p_pl = subparsers.add_parser('plot', help='Generate plot and save to file')
     p_pl.add_argument('log', help='Path to .bin log file')
     p_pl.add_argument('--recipe', choices=list(RECIPES.keys()),
                        help='Pre-built plot recipe')
+    p_pl.add_argument('--sources', default=None,
+                       help='Custom sources (e.g. "RATE.YDes,RATE.Y,-XKF1.PD")')
     p_pl.add_argument('--types', default=None,
                        help='Message types (for custom plot)')
     p_pl.add_argument('--fields', default=None,
@@ -712,6 +922,8 @@ def main():
         cmd_extract(args)
     elif args.command == 'compare':
         cmd_compare(args)
+    elif args.command == 'stats':
+        cmd_stats(args)
     elif args.command == 'plot':
         cmd_plot(args)
 

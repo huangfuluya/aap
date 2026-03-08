@@ -17,7 +17,7 @@ You have a log extraction tool at `.claude/skills/log-analyze/log_extract.py` th
 python3 .claude/skills/log-analyze/log_extract.py overview <logfile>
 ```
 
-This gives you: message types with counts and fields, key parameters, flight modes, arm/disarm events, and errors. Read the output carefully before proceeding.
+This gives you: message types with counts and fields, key parameters (including tuning PID gains, notch filter config, motor settings), flight modes, arm/disarm events, and errors. Read the output carefully before proceeding.
 
 ### Step 2: Targeted Extraction
 
@@ -41,7 +41,27 @@ python3 .claude/skills/log-analyze/log_extract.py extract <logfile> \
     --types IMU --decimate 10 --limit 0
 ```
 
-### Step 3: Multi-Source Comparison
+### Step 3: Statistics
+
+Compute min/max/mean/std/percentiles without custom scripts:
+
+```bash
+# Stats for specific sources
+python3 .claude/skills/log-analyze/log_extract.py stats <logfile> \
+    --sources "RATE.YDes,RATE.Y,RATE.YOut,PIDY.P,PIDY.D"
+
+# Stats using types/fields syntax
+python3 .claude/skills/log-analyze/log_extract.py stats <logfile> \
+    --types RATE --fields YDes,Y,YOut --from-time 10 --to-time 30
+
+# Stats with condition filter
+python3 .claude/skills/log-analyze/log_extract.py stats <logfile> \
+    --types XKF4 --fields SV,SP,SH --condition "XKF4.C==0"
+```
+
+Output includes: Count, Min, Max, Mean, Std, P5, P50, P95 for each field.
+
+### Step 4: Multi-Source Comparison
 
 Compare data from multiple sensors aligned to a common time grid:
 
@@ -61,19 +81,52 @@ python3 .claude/skills/log-analyze/log_extract.py compare <logfile> --recipe ekf
 # RC input vs output
 python3 .claude/skills/log-analyze/log_extract.py compare <logfile> --recipe rc
 
+# PID components per axis
+python3 .claude/skills/log-analyze/log_extract.py compare <logfile> --recipe pid_yaw
+python3 .claude/skills/log-analyze/log_extract.py compare <logfile> --recipe pid_roll
+python3 .claude/skills/log-analyze/log_extract.py compare <logfile> --recipe pid_pitch
+
+# Rate tracking per axis (desired vs actual vs output)
+python3 .claude/skills/log-analyze/log_extract.py compare <logfile> --recipe rate_yaw
+python3 .claude/skills/log-analyze/log_extract.py compare <logfile> --recipe rate_roll
+python3 .claude/skills/log-analyze/log_extract.py compare <logfile> --recipe rate_pitch
+python3 .claude/skills/log-analyze/log_extract.py compare <logfile> --recipe rate_all
+
+# Motor outputs
+python3 .claude/skills/log-analyze/log_extract.py compare <logfile> --recipe motor_output
+
+# Controller RMS values (oscillation indicator)
+python3 .claude/skills/log-analyze/log_extract.py compare <logfile> --recipe ctrl_rms
+
 # Custom comparison (prefix with - to negate)
 python3 .claude/skills/log-analyze/log_extract.py compare <logfile> \
     --sources "BARO.Alt,RFND.Dist,-XKF1.PD"
 ```
 
-### Step 4: Plot (when visual analysis helps)
+### Step 5: Plot (when visual analysis helps)
 
 ```bash
 # Plot a recipe
 python3 .claude/skills/log-analyze/log_extract.py plot <logfile> \
     --recipe altitude --output /tmp/altitude.png
 
-# Plot specific fields
+# Plot PID components (great for oscillation diagnosis)
+python3 .claude/skills/log-analyze/log_extract.py plot <logfile> \
+    --recipe pid_yaw --from-time 30 --to-time 35 --output /tmp/pid_yaw.png
+
+# Plot rate tracking
+python3 .claude/skills/log-analyze/log_extract.py plot <logfile> \
+    --recipe rate_yaw --output /tmp/rate_yaw.png
+
+# Plot controller RMS
+python3 .claude/skills/log-analyze/log_extract.py plot <logfile> \
+    --recipe ctrl_rms --output /tmp/ctrl_rms.png
+
+# Plot custom sources (same syntax as compare --sources)
+python3 .claude/skills/log-analyze/log_extract.py plot <logfile> \
+    --sources "RATE.YDes,RATE.Y" --output /tmp/yaw_tracking.png
+
+# Plot specific fields from a message type
 python3 .claude/skills/log-analyze/log_extract.py plot <logfile> \
     --types XKF4 --fields SV,SP,SH --output /tmp/ekf_var.png
 
@@ -84,6 +137,25 @@ python3 .claude/skills/log-analyze/log_extract.py plot <logfile> \
 
 After generating a plot, read the image file to view it.
 
+## Available Recipes
+
+| Recipe | Description | Sources |
+|--------|-------------|---------|
+| `altitude` | Altitude comparison | BARO, RFND, EKF, CTUN/QTUN |
+| `attitude` | Attitude actual vs desired | ATT Roll/Pitch/Yaw + Des |
+| `vibration` | Vibration analysis | IMU AccXYZ, VIBE XYZ |
+| `ekf_health` | EKF variances | XKF4 SV/SP/SH/SM/SVT |
+| `rc` | RC input vs output | RCIN/RCOU C1-C4 |
+| `pid_roll` | Roll PID components | PIDR P/I/D/FF |
+| `pid_pitch` | Pitch PID components | PIDP P/I/D/FF |
+| `pid_yaw` | Yaw PID components | PIDY P/I/D/FF |
+| `rate_roll` | Roll rate tracking | RATE RDes/R/ROut |
+| `rate_pitch` | Pitch rate tracking | RATE PDes/P/POut |
+| `rate_yaw` | Yaw rate tracking | RATE YDes/Y/YOut |
+| `rate_all` | All axes rate tracking | RATE Des/Act all axes |
+| `motor_output` | Motor outputs | RCOU C1-C4 |
+| `ctrl_rms` | Controller RMS values | CTRL RMSRollP/D, PitchP/D, Yaw |
+
 ## Analysis Methodology
 
 1. **Extract data first, theorize second.** Always run `overview` then targeted extractions before forming hypotheses.
@@ -91,6 +163,17 @@ After generating a plot, read the image file to view it.
 3. **Check the events timeline.** ARM/DISARM, mode changes, and errors give crucial context.
 4. **Filter EKF by core.** XKF* messages have a `C` field for core index. Use `--condition "XKF1.C==0"` to isolate one core.
 5. **Mind the units.** XKF1 angles are in centidegrees. PD is positive-down (NED). BARO.Alt is meters above origin. RFND.Dist is meters.
+6. **Use stats for quantitative comparison.** When comparing axes or checking for oscillation, `stats` gives instant min/max/mean/std without custom scripts.
+
+## Oscillation Diagnosis Workflow
+
+When investigating oscillation or tuning issues:
+
+1. **Overview** — check ATC_RAT_* gains, SMAX, filter cutoffs, notch config
+2. **Stats** — `--sources "CTRL.RMSRollD,CTRL.RMSPitchD,CTRL.RMSYaw"` to identify which axis
+3. **PID plot** — `--recipe pid_yaw` (or roll/pitch) to see P/I/D/FF components
+4. **Rate tracking** — `--recipe rate_yaw` to check desired vs actual tracking quality
+5. **Zoom in** — use `--from-time`/`--to-time` on plots to examine specific maneuvers
 
 ## Common Message Types
 
@@ -119,6 +202,8 @@ After generating a plot, read the image file to view it.
 | RCIN | C1-C16 | RC input channels (PWM) |
 | RCOU | C1-C14 | Servo/motor outputs (PWM) |
 | RATE | RDes,R,ROut,PDes,P,POut,YDes,Y,YOut | PID rate controller |
+| PIDR/PIDP/PIDY | Tar,Act,Err,P,I,D,FF,Dmod,SRate,Limit | PID components per axis |
+| CTRL | RMSRollP,RMSRollD,RMSPitchP,RMSPitchD,RMSYaw | Controller RMS values |
 
 ### System
 | Type | Key Fields | Notes |
@@ -143,3 +228,5 @@ After generating a plot, read the image file to view it.
 - The `compare` command aligns data to a 0.1s grid by default. Use `--interval 0.02` for higher resolution.
 - For EKF altitude, use the `altitude` recipe which automatically negates XKF1.PD for you.
 - `--condition` uses pymavlink syntax: `"MSG.Field==value"`, `"MSG.Field>value"`, supports `and`/`or`.
+- Use `--sources` with both `compare` and `plot` for ad-hoc cross-message-type analysis.
+- The `stats` command supports both `--sources "TYPE.Field,..."` and `--types TYPE --fields F1,F2` syntax.
