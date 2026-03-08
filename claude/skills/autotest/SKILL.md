@@ -20,7 +20,16 @@ Parse `$ARGUMENTS` for vehicle and optional test name:
 
 ## Workflow
 
-### List available tests for a vehicle
+### Step 1: Build the vehicle first
+
+**Always build separately using `/build` or `./waf` — do NOT use `build.<Vehicle>` in autotest.py:**
+
+```bash
+./waf configure --board sitl    # if not already configured
+./waf copter                    # or plane, rover, sub, etc.
+```
+
+### Step 2: List available tests (optional)
 
 ```bash
 python3 Tools/autotest/autotest.py --list-subtests-for-vehicle=<Vehicle>
@@ -28,29 +37,24 @@ python3 Tools/autotest/autotest.py --list-subtests-for-vehicle=<Vehicle>
 
 Vehicle names: `Copter`, `Plane`, `Rover`, `Sub`, `Tracker`, `Helicopter`, `QuadPlane`, `BalanceBot`, `Sailboat`, `Blimp`
 
-### Build and run all tests for a vehicle
+### Step 3: Run tests
 
 ```bash
-python3 Tools/autotest/autotest.py build.<Vehicle> test.<Vehicle>
-```
+# Run all tests for a vehicle
+python3 Tools/autotest/autotest.py test.<Vehicle>
 
-### Run a specific test method
-
-```bash
-python3 Tools/autotest/autotest.py build.<Vehicle> test.<Vehicle>.<TestMethod>
+# Run a specific test method
+python3 Tools/autotest/autotest.py test.<Vehicle>.<TestMethod>
 ```
 
 ### Useful options
 
 ```bash
 # Show test timing info
-python3 Tools/autotest/autotest.py --show-test-timings build.Copter test.Copter.AltHold
+python3 Tools/autotest/autotest.py --show-test-timings test.Copter.AltHold
 
-# Run with debug build
-python3 Tools/autotest/autotest.py --debug build.Copter test.Copter.AltHold
-
-# Skip the build step (if already built)
-python3 Tools/autotest/autotest.py --no-configure test.Copter.AltHold
+# Run with debug build (build with --debug first via /build)
+python3 Tools/autotest/autotest.py --debug test.Copter.AltHold
 ```
 
 ## Test file locations

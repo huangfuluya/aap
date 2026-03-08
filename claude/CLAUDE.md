@@ -23,7 +23,7 @@ If skills are installed (`.claude/skills/`), prefer using them over manual comma
 
 ## Build System
 
-ArduPilot uses the Waf build system. Always run `./waf` from the repository root. Use `/build` for interactive builds, `/boards` to search targets.
+ArduPilot uses the Waf build system. Always run `./waf` from the repository root. **Always use `/build` (or `./waf` directly) for all building — never use `autotest.py build.*` for builds.** Use `/boards` to search targets.
 
 ### Common Build Commands
 
@@ -88,12 +88,16 @@ Tools/autotest/sim_vehicle.py -v ArduCopter -I 1      # Second instance (differe
 
 ### Running Autotest Suite
 
-Use `/autotest` for guided test execution with argument parsing.
+Use `/autotest` for guided test execution with argument parsing. **Always build first using `/build` or `./waf`, then run tests separately:**
 
 ```bash
-# Run specific vehicle tests
-Tools/autotest/autotest.py build.Copter test.Copter
-Tools/autotest/autotest.py build.Plane test.Plane
+# Step 1: Build the vehicle (use /build skill or ./waf directly)
+./waf configure --board sitl
+./waf copter
+
+# Step 2: Run tests (do NOT use build.Vehicle - build separately above)
+Tools/autotest/autotest.py test.Copter
+Tools/autotest/autotest.py test.Plane.QuadPlane
 ```
 
 ## Architecture Overview
