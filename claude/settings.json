@@ -30,8 +30,6 @@
       "Bash(ls *)",
       "Bash(mkdir *)",
       "Bash(chmod *)",
-      "Bash(cp *)",
-      "Bash(mv *)",
       "Bash(astyle *)",
       "Bash(Tools/autotest/autotest.py *)",
       "Bash(Tools/autotest/sim_vehicle.py *)"
