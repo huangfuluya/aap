@@ -7,6 +7,9 @@ Enforces:
 - Commit messages must have subsystem prefix
 - No git clean without permission
 - No force push to main/master
+- No git push without explicit permission
+- No git commit --amend without explicit permission
+- No git rebase (squash) without explicit permission
 """
 import sys
 import json
@@ -24,16 +27,43 @@ def check_git_clean(command):
     return None
 
 
-def check_force_push(command):
-    """Block force push to main/master."""
-    if not re.search(r'\bgit\s+push\b', command):
-        return None
-    has_force = bool(re.search(r'--force\b|--force-with-lease\b|\s-f\b', command))
-    targets_protected = bool(re.search(r'\b(main|master)\b', command))
-    if has_force and targets_protected:
+def check_push(command):
+    """Block any git push without explicit permission."""
+    if re.search(r'\bgit\s+push\b', command):
         return (
-            "BLOCKED: Force push to main/master is prohibited.\n"
-            "This can overwrite upstream history and cause data loss."
+            "BLOCKED: git push requires explicit user permission.\n"
+            "Prefer incremental new commits — they are easier to review and revert.\n"
+            "Ask the user before pushing."
+        )
+    return None
+
+
+def check_commit_amend(command):
+    """Block git commit --amend without explicit permission."""
+    if not re.search(r'\bgit\s+commit\b', command):
+        return None
+    if re.search(r'--amend\b', command):
+        return (
+            "BLOCKED: git commit --amend requires explicit user permission.\n"
+            "Prefer creating a new commit — it is easier to review and revert.\n"
+            "Ask the user before amending."
+        )
+    return None
+
+
+def check_rebase_or_squash(command):
+    """Block git rebase and git reset used for squashing."""
+    if re.search(r'\bgit\s+rebase\b', command):
+        return (
+            "BLOCKED: git rebase requires explicit user permission.\n"
+            "Prefer incremental new commits — squashing can lose work.\n"
+            "Ask the user before rebasing."
+        )
+    if re.search(r'\bgit\s+reset\b', command):
+        return (
+            "BLOCKED: git reset requires explicit user permission.\n"
+            "This can discard commits and staged changes.\n"
+            "Ask the user before resetting."
         )
     return None
 
@@ -110,7 +140,9 @@ def main():
     # Run checks in priority order
     for check in [
         check_git_clean,
-        check_force_push,
+        check_push,
+        check_commit_amend,
+        check_rebase_or_squash,
         check_commit_coauthor,
         check_commit_prefix,
     ]:
