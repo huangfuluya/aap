@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""ArduPilot DataFlash log extraction tool for Claude Code.
+"""ArduPilot log extraction tool for Claude Code.
 
-Provides structured extraction of .bin log data for analysis.
+Provides structured extraction of .bin and .tlog log data for analysis.
 All output goes to stdout (except plots to file). Read-only — never modifies logs.
 
 Usage:
@@ -9,6 +9,9 @@ Usage:
     python3 log_extract.py extract <logfile> --types XKF1,BARO [--fields ...] [--condition ...]
     python3 log_extract.py compare <logfile> --recipe altitude
     python3 log_extract.py plot <logfile> --recipe altitude --output /tmp/plot.png
+
+Supports both DataFlash .bin logs and MAVLink .tlog telemetry logs.
+For .tlog files, use --system to filter by MAVLink source system ID.
 """
 
 import argparse
@@ -269,6 +272,11 @@ RECIPES = {
 # Helpers
 # ---------------------------------------------------------------------------
 
+def is_tlog(filename):
+    """Check if a log file is a MAVLink tlog (vs DataFlash bin)."""
+    return filename.lower().endswith('.tlog') or filename.lower().endswith('.tlog.raw')
+
+
 def open_log(filename):
     """Open a log file with mavutil, return the connection object."""
     if not os.path.exists(filename):
@@ -294,11 +302,27 @@ def get_time_base(mlog):
 
 
 def get_field_names(mlog, msg_type):
-    """Get field names for a message type."""
-    if hasattr(mlog, 'name_to_id') and msg_type in mlog.name_to_id:
+    """Get field names for a message type.
+
+    For .bin files, uses the pre-indexed FMT metadata.
+    For .tlog files, scans for the first message of that type and reads
+    its field names from the MAVLink message definition.
+    """
+    # bin path: use pre-indexed formats
+    if hasattr(mlog, 'name_to_id') and hasattr(mlog, 'formats') and msg_type in mlog.name_to_id:
         fmt_id = mlog.name_to_id[msg_type]
         if fmt_id in mlog.formats:
             return mlog.formats[fmt_id].columns
+
+    # tlog fallback: scan for first message of this type
+    mlog._rewind()
+    m = mlog.recv_match(type=[msg_type])
+    mlog._rewind()
+    if m is not None:
+        # MAVLink messages expose field names via .fieldnames or ._fieldnames
+        names = getattr(m, 'fieldnames', None) or getattr(m, '_fieldnames', None)
+        if names:
+            return list(names)
     return []
 
 
@@ -325,6 +349,13 @@ def format_duration(seconds):
         return f"{s}s"
 
 
+def check_system_filter(msg, system_filter):
+    """Return True if message passes system filter (or no filter set)."""
+    if system_filter is None:
+        return True
+    return msg.get_srcSystem() == system_filter
+
+
 def parse_source_specs(specs_str):
     """Parse source specs like 'RATE.YDes,RATE.Y,-XKF1.PD' into recipe tuples."""
     sources = []
@@ -347,6 +378,170 @@ def parse_source_specs(specs_str):
 # Commands
 # ---------------------------------------------------------------------------
 
+SEVERITY_NAMES = {
+    0: 'EMERG', 1: 'ALERT', 2: 'CRIT', 3: 'ERR',
+    4: 'WARN', 5: 'NOTICE', 6: 'INFO', 7: 'DEBUG',
+}
+
+PLANE_MODE_NAMES = {
+    0: 'MANUAL', 1: 'CIRCLE', 2: 'STABILIZE', 3: 'TRAINING', 4: 'ACRO',
+    5: 'FBWA', 6: 'FBWB', 7: 'CRUISE', 8: 'AUTOTUNE', 10: 'AUTO',
+    11: 'RTL', 12: 'LOITER', 13: 'TAKEOFF', 14: 'AVOID_ADSB', 15: 'GUIDED',
+    16: 'INITIALISING', 17: 'QSTABILIZE', 18: 'QHOVER', 19: 'QLOITER',
+    20: 'QLAND', 21: 'QRTL', 22: 'QAUTOTUNE', 23: 'QACRO', 24: 'THERMAL',
+    25: 'LOITER_ALT_QLAND',
+}
+
+COPTER_MODE_NAMES = {
+    0: 'STABILIZE', 1: 'ACRO', 2: 'ALT_HOLD', 3: 'AUTO', 4: 'GUIDED',
+    5: 'LOITER', 6: 'RTL', 7: 'CIRCLE', 9: 'LAND', 11: 'DRIFT',
+    13: 'SPORT', 14: 'FLIP', 15: 'AUTOTUNE', 16: 'POSHOLD', 17: 'BRAKE',
+    18: 'THROW', 19: 'AVOID_ADSB', 20: 'GUIDED_NOGPS', 21: 'SMART_RTL',
+    22: 'FLOWHOLD', 23: 'FOLLOW', 24: 'ZIGZAG', 25: 'SYSTEMID',
+    26: 'AUTOROTATE', 27: 'AUTO_RTL',
+}
+
+
+def _tlog_overview(args, mlog, time_base):
+    """Single-pass tlog overview: collect types, counts, fields, params,
+    statustext, modes, and source systems."""
+    system_filter = getattr(args, 'system', None)
+
+    type_counts = {}
+    type_fields = {}  # first-seen field names per type
+    params = {}
+    statustexts = []
+    source_systems = {}  # (sys,comp) -> {count, type, autopilot}
+    mode_changes = []  # (time, mode_num, armed, sys_id)
+    prev_mode_key = None
+    last_t = 0
+
+    mlog._rewind()
+    while True:
+        m = mlog.recv_msg()
+        if m is None:
+            break
+        t = msg_time_s(m, time_base)
+        last_t = t
+        mtype = m.get_type()
+        sys_id = m.get_srcSystem()
+
+        if mtype == 'BAD_DATA':
+            continue
+
+        if system_filter is not None and sys_id != system_filter:
+            # still count source systems even when filtered
+            comp_id = m.get_srcComponent()
+            key = (sys_id, comp_id)
+            if key not in source_systems:
+                source_systems[key] = {'count': 0}
+            source_systems[key]['count'] += 1
+            continue
+
+        # type counts and field discovery
+        type_counts[mtype] = type_counts.get(mtype, 0) + 1
+        if mtype not in type_fields:
+            names = getattr(m, 'fieldnames', None) or getattr(m, '_fieldnames', None)
+            if names:
+                type_fields[mtype] = list(names)
+
+        # source systems
+        comp_id = m.get_srcComponent()
+        key = (sys_id, comp_id)
+        if key not in source_systems:
+            source_systems[key] = {'count': 0}
+        source_systems[key]['count'] += 1
+
+        # params from PARAM_VALUE
+        if mtype == 'PARAM_VALUE':
+            params[m.param_id] = m.param_value
+
+        # statustext
+        if mtype == 'STATUSTEXT':
+            sev = SEVERITY_NAMES.get(m.severity, str(m.severity))
+            statustexts.append((t, sev, m.text))
+
+        # heartbeat → mode tracking
+        if mtype == 'HEARTBEAT' and sys_id != 255:
+            armed = (m.base_mode & 128) != 0
+            mode_num = m.custom_mode
+            autopilot = m.autopilot
+            mav_type = m.type
+            # store autopilot/type info
+            source_systems[key]['autopilot'] = autopilot
+            source_systems[key]['mav_type'] = mav_type
+            mode_key = (sys_id, mode_num, armed)
+            if mode_key != prev_mode_key:
+                mode_changes.append((t, mode_num, armed, sys_id, mav_type))
+                prev_mode_key = mode_key
+
+    # -- source systems --
+    if source_systems:
+        print(f"\n=== SOURCE SYSTEMS ===")
+        for (sys_id, comp_id), info in sorted(source_systems.items()):
+            extra = ''
+            if 'mav_type' in info:
+                extra += f"  type={info['mav_type']}"
+            if 'autopilot' in info:
+                extra += f"  autopilot={info['autopilot']}"
+            print(f"  SysID={sys_id} CompID={comp_id}  msgs={info['count']}{extra}")
+        if system_filter is None:
+            # find the likely vehicle system ID (autopilot=3 = ArduPilotMega)
+            vehicle_sys = None
+            for (sys_id, comp_id), info in source_systems.items():
+                if info.get('autopilot') == 3:
+                    vehicle_sys = sys_id
+                    break
+            if vehicle_sys is not None and vehicle_sys != 1:
+                print(f"  Note: vehicle is SysID={vehicle_sys}. Use --system {vehicle_sys} to filter.")
+
+    # -- message types --
+    types_info = sorted(type_counts.items(), key=lambda x: -x[1])
+    total_msgs = sum(c for _, c in types_info)
+    print(f"\n=== MESSAGE TYPES ({len(types_info)} types, {total_msgs:,} messages) ===")
+    for name, count in types_info:
+        cols = type_fields.get(name, [])
+        cols_str = ','.join(cols)
+        if len(cols_str) > 80:
+            cols_str = cols_str[:77] + '...'
+        print(f"  {name:<30s} {count:>8,}  {cols_str}")
+
+    # -- key parameters --
+    if params:
+        print(f"\n=== KEY PARAMETERS ===")
+        printed = set()
+        for prefix in KEY_PARAM_PREFIXES:
+            for pname in sorted(params.keys()):
+                if pname.startswith(prefix) and pname not in printed:
+                    print(f"  {pname} = {params[pname]}")
+                    printed.add(pname)
+
+    # -- flight modes (from heartbeat, vehicle only) --
+    if mode_changes:
+        print(f"\n=== FLIGHT MODES ===")
+        for t, mode_num, armed, sys_id, mav_type in mode_changes:
+            # guess mode name from mav_type
+            if mav_type == 1:  # FIXED_WING
+                mname = PLANE_MODE_NAMES.get(mode_num, f'MODE_{mode_num}')
+            elif mav_type in (2, 13, 14):  # QUADROTOR, HEXAROTOR, OCTOROTOR
+                mname = COPTER_MODE_NAMES.get(mode_num, f'MODE_{mode_num}')
+            else:
+                mname = f'MODE_{mode_num}'
+            state = 'ARMED' if armed else 'DISARMED'
+            print(f"  {t:7.1f}s  {mname:<20s}  {state}")
+
+    # -- statustext --
+    if statustexts:
+        print(f"\n=== STATUS TEXT ({len(statustexts)} messages) ===")
+        for t, sev, text in statustexts:
+            print(f"  {t:7.1f}s [{sev:<6s}] {text}")
+
+    # -- time range --
+    print(f"\n=== TIME RANGE ===")
+    print(f"  Duration: {format_duration(last_t)}")
+    print(f"  Total: {last_t:.1f}s")
+
+
 def cmd_overview(args):
     """Show log overview: message types, key params, events, modes."""
     mlog = open_log(args.log)
@@ -358,7 +553,12 @@ def cmd_overview(args):
     print(f"File: {os.path.abspath(args.log)}")
     print(f"Size: {file_size / (1024*1024):.1f} MB")
 
-    # -- message types --
+    # tlog gets its own overview path (single-pass scan)
+    if is_tlog(args.log):
+        _tlog_overview(args, mlog, time_base)
+        return
+
+    # -- bin: message types from pre-indexed metadata --
     types_info = []
     if hasattr(mlog, 'name_to_id'):
         for name, type_id in sorted(mlog.name_to_id.items()):
@@ -488,6 +688,7 @@ def cmd_extract(args):
     writer = csv.writer(sys.stdout)
     writer.writerow(header)
 
+    system_filter = getattr(args, 'system', None)
     mlog._rewind()
     count = 0
     skip_count = 0
@@ -495,6 +696,8 @@ def cmd_extract(args):
         m = mlog.recv_match(type=types, condition=args.condition)
         if m is None:
             break
+        if not check_system_filter(m, system_filter):
+            continue
 
         t = msg_time_s(m, time_base)
 
@@ -551,11 +754,14 @@ def cmd_compare(args):
         source_data[label] = []
         needed_types.add(msg_type)
 
+    system_filter = getattr(args, 'system', None)
     mlog._rewind()
     while True:
         m = mlog.recv_match(type=list(needed_types))
         if m is None:
             break
+        if not check_system_filter(m, system_filter):
+            continue
         t = msg_time_s(m, time_base)
         if args.from_time is not None and t < args.from_time:
             continue
@@ -690,11 +896,14 @@ def cmd_plot(args):
         series[label] = ([], [])
         needed_types.add(msg_type)
 
+    system_filter = getattr(args, 'system', None)
     mlog._rewind()
     while True:
         m = mlog.recv_match(type=list(needed_types))
         if m is None:
             break
+        if not check_system_filter(m, system_filter):
+            continue
         t = msg_time_s(m, time_base)
         if args.from_time is not None and t < args.from_time:
             continue
@@ -770,11 +979,14 @@ def cmd_stats(args):
         data[label] = []
         needed_types.add(msg_type)
 
+    system_filter = getattr(args, 'system', None)
     mlog._rewind()
     while True:
         m = mlog.recv_match(type=list(needed_types), condition=args.condition)
         if m is None:
             break
+        if not check_system_filter(m, system_filter):
+            continue
         t = msg_time_s(m, time_base)
         if args.from_time is not None and t < args.from_time:
             continue
@@ -835,13 +1047,19 @@ def main():
     )
     subparsers = parser.add_subparsers(dest='command')
 
+    # common tlog argument
+    def add_system_arg(p):
+        p.add_argument('--system', type=int, default=None,
+                        help='Filter by MAVLink source system ID (tlog only)')
+
     # overview
     p_ov = subparsers.add_parser('overview', help='Log overview: types, params, modes, events')
-    p_ov.add_argument('log', help='Path to .bin log file')
+    p_ov.add_argument('log', help='Path to .bin or .tlog log file')
+    add_system_arg(p_ov)
 
     # extract
     p_ex = subparsers.add_parser('extract', help='Extract message data as CSV')
-    p_ex.add_argument('log', help='Path to .bin log file')
+    p_ex.add_argument('log', help='Path to .bin or .tlog log file')
     p_ex.add_argument('--types', required=True,
                        help='Message types (comma-separated, e.g. XKF1,BARO)')
     p_ex.add_argument('--fields', default=None,
@@ -856,11 +1074,12 @@ def main():
                        help='Max rows to output (0=unlimited, default=5000)')
     p_ex.add_argument('--decimate', type=int, default=1,
                        help='Output every Nth message (default=1, no decimation)')
+    add_system_arg(p_ex)
 
     # compare
     p_cmp = subparsers.add_parser('compare',
                                    help='Time-aligned multi-source comparison')
-    p_cmp.add_argument('log', help='Path to .bin log file')
+    p_cmp.add_argument('log', help='Path to .bin or .tlog log file')
     p_cmp.add_argument('--recipe', choices=list(RECIPES.keys()),
                         help='Pre-built comparison recipe')
     p_cmp.add_argument('--sources', default=None,
@@ -873,10 +1092,11 @@ def main():
                         help='Max rows (0=unlimited, default=5000)')
     p_cmp.add_argument('--interval', type=float, default=0.1,
                         help='Grid interval in seconds (default=0.1)')
+    add_system_arg(p_cmp)
 
     # stats
     p_st = subparsers.add_parser('stats', help='Compute statistics for fields')
-    p_st.add_argument('log', help='Path to .bin log file')
+    p_st.add_argument('log', help='Path to .bin or .tlog log file')
     p_st.add_argument('--sources', default=None,
                        help='Source specs (e.g. "RATE.YDes,RATE.Y,PIDY.D")')
     p_st.add_argument('--types', default=None,
@@ -889,10 +1109,11 @@ def main():
                        help='Start time in seconds')
     p_st.add_argument('--to-time', type=float, default=None,
                        help='End time in seconds')
+    add_system_arg(p_st)
 
     # plot
     p_pl = subparsers.add_parser('plot', help='Generate plot and save to file')
-    p_pl.add_argument('log', help='Path to .bin log file')
+    p_pl.add_argument('log', help='Path to .bin or .tlog log file')
     p_pl.add_argument('--recipe', choices=list(RECIPES.keys()),
                        help='Pre-built plot recipe')
     p_pl.add_argument('--sources', default=None,
@@ -910,6 +1131,7 @@ def main():
     p_pl.add_argument('--output', default='/tmp/ardupilot_plot.png',
                        help='Output file path (default: /tmp/ardupilot_plot.png)')
     p_pl.add_argument('--title', default=None, help='Plot title')
+    add_system_arg(p_pl)
 
     args = parser.parse_args()
     if args.command is None:

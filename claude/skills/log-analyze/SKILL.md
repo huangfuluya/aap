@@ -1,13 +1,13 @@
 ---
 name: log-analyze
-description: Analyze ArduPilot DataFlash .bin log files. Use when the user provides a .bin log file path or asks to analyze flight log data.
-argument-hint: "<logfile.bin> [focus area]"
+description: Analyze ArduPilot DataFlash .bin log files or MAVLink .tlog telemetry logs. Use when the user provides a .bin or .tlog log file path or asks to analyze flight log data.
+argument-hint: "<logfile> [focus area]"
 allowed-tools: Bash(python3 *), Read, Grep, Glob
 ---
 
 # ArduPilot Log Analysis
 
-You have a log extraction tool at `.claude/skills/log-analyze/log_extract.py` that handles common analysis tasks without writing one-off scripts.
+You have a log extraction tool at `.claude/skills/log-analyze/log_extract.py` that handles common analysis tasks without writing one-off scripts. It supports both DataFlash `.bin` logs and MAVLink `.tlog` telemetry logs.
 
 ## Standard Workflow
 
@@ -18,6 +18,13 @@ python3 .claude/skills/log-analyze/log_extract.py overview <logfile>
 ```
 
 This gives you: message types with counts and fields, key parameters (including tuning PID gains, notch filter config, motor settings), flight modes, arm/disarm events, and errors. Read the output carefully before proceeding.
+
+**For .tlog files:** The overview also shows source systems (vehicle, GCS, peripherals), status text messages, and suggests the vehicle system ID. Use `--system <id>` to filter by source system:
+
+```bash
+# Show overview filtered to vehicle only (eliminates GCS noise)
+python3 .claude/skills/log-analyze/log_extract.py overview <logfile.tlog> --system 5
+```
 
 ### Step 2: Targeted Extraction
 
@@ -230,3 +237,46 @@ When investigating oscillation or tuning issues:
 - `--condition` uses pymavlink syntax: `"MSG.Field==value"`, `"MSG.Field>value"`, supports `and`/`or`.
 - Use `--sources` with both `compare` and `plot` for ad-hoc cross-message-type analysis.
 - The `stats` command supports both `--sources "TYPE.Field,..."` and `--types TYPE --fields F1,F2` syntax.
+
+## Telemetry Log (.tlog) Support
+
+The tool supports MAVLink `.tlog` files with the same commands as `.bin` files. Key differences:
+
+- **Message names differ:** tlog uses MAVLink names (e.g., `VFR_HUD`, `GLOBAL_POSITION_INT`, `GPS_RAW_INT`, `EKF_STATUS_REPORT`, `ATTITUDE`) rather than DataFlash names (e.g., `CTUN`, `GPS`, `XKF4`, `ATT`).
+- **Field names differ:** tlog uses MAVLink field names (e.g., `alt`, `climb`, `airspeed`) rather than DataFlash names (e.g., `Alt`, `CRt`, `Aspd`). Run `overview` first to see available types and fields.
+- **Multiple source systems:** tlog contains messages from vehicle, GCS, and peripherals interleaved. Use `--system <id>` to filter to the vehicle only. The overview command identifies the vehicle system ID.
+- **Status text:** tlog overview shows all STATUSTEXT messages with severity and timestamp — often the most useful data for crash investigation.
+- **No EV/ERR messages:** tlog doesn't have DataFlash event/error messages. Use STATUSTEXT for equivalent information.
+- **Recipes may not work directly:** The built-in recipes use DataFlash message/field names. For tlog, use `--sources` or `--types`/`--fields` with MAVLink names instead.
+
+### Common tlog message types for crash investigation
+
+```bash
+# Altitude, speed, heading
+python3 .claude/skills/log-analyze/log_extract.py extract <tlog> --types VFR_HUD \
+    --fields alt,climb,airspeed,groundspeed,heading --system 5
+
+# Position (lat/lon/alt)
+python3 .claude/skills/log-analyze/log_extract.py extract <tlog> --types GLOBAL_POSITION_INT \
+    --fields lat,lon,alt,relative_alt,vx,vy,vz --system 5
+
+# GPS fix status
+python3 .claude/skills/log-analyze/log_extract.py extract <tlog> --types GPS_RAW_INT \
+    --fields fix_type,lat,lon,alt,satellites_visible --system 5
+
+# EKF health
+python3 .claude/skills/log-analyze/log_extract.py extract <tlog> --types EKF_STATUS_REPORT \
+    --fields flags,velocity_variance,pos_horiz_variance,pos_vert_variance,compass_variance --system 5
+
+# Nav controller
+python3 .claude/skills/log-analyze/log_extract.py extract <tlog> --types NAV_CONTROLLER_OUTPUT \
+    --fields nav_roll,nav_pitch,alt_error,aspd_error,wp_dist --system 5
+
+# Attitude
+python3 .claude/skills/log-analyze/log_extract.py extract <tlog> --types ATTITUDE \
+    --fields roll,pitch,yaw --system 5
+
+# Plot altitude with custom sources
+python3 .claude/skills/log-analyze/log_extract.py plot <tlog> \
+    --sources "VFR_HUD.alt,VFR_HUD.climb" --output /tmp/alt.png --system 5
+```
